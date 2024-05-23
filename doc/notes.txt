@@ -1,0 +1,9 @@
+time taken to receive a message: round-trip time
+libc functions authorised only
+
+icmp: internet control message protocol packet format
+  - type            8
+  - code            8
+  - checksum        16
+  - extended header 32
+                    64
