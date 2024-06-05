@@ -7,3 +7,26 @@ icmp: internet control message protocol packet format
   - checksum        16
   - extended header 32
                     64
+
+nslookup for find the ip address of a domain name (DNS Resolver)
+
+
+errors:
+	- TTL (time to live) Expired in Transit
+	- Destination Host Unreachable
+	- Request Timed Out
+	- Unknown Host
+
+steps:
+	- input: -option hostname
+	- dns lookup: gethostbyname()
+	- after CTRL + C, a report : Interrupt Handler sets loop condition false
+	- loop:
+		* set ttl option
+		* set timeout recv funtion
+		* send packet:
+			+ ICMP_ECHO Header struct
+			+ Pid process
+			+ msg part randomly
+			+ checksum
+		* wait for recv packet
