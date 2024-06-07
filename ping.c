@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
 #include <netinet/tcp.h>
@@ -24,24 +25,29 @@ int
 	}
 
 	// DNS resolver
-	struct hostent *hp;
+	struct hostent *host;
+	struct in_addr **addr_list;
 
-	hp = gethostbyname(argv[1]);
-	if (hp == NULL)
+	host = gethostbyname(argv[1]);
+	if (host == NULL)
 	{
 		herror("gethostbyname");
 		return 1;
 	}
 
+
+
 	printf("hostent struct:\n\t name: %s, addrtype: %d, length: %d\n",
-		hp->h_name,
-		hp->h_addrtype,
-		hp->h_length);
-/*	for (int i = 0; hp->h_addr_list[i]; ++i)
+		host->h_name,
+		host->h_addrtype,
+		host->h_length);
+	printf("addrlist:\n");
+	addr_list = (struct in_addr **)host->h_addr_list;
+	for (int i = 0; addr_list[i]; ++i)
 	{
-		
+		printf("%s\n", inet_ntoa(*addr_list[i]));
 	}
-*/
+
 	int sockfd;
 
 	sockfd = socket(AF_PACKET, SOCK_RAW, IPPROTO_ICMP);
