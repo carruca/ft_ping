@@ -15,31 +15,47 @@
 #include <netdb.h>
 #include <argp.h>
 
-#define MSG_SIZE	64
+#define DEFAULT_COUNT 0
+#define OPTION_VERBOSE 0x0001
 
-struct ping
+struct ping_stat
+{
+	double tmin;
+	double tmax;
+	double tsum;
+	double tsumsq;
+};
+
+struct ping_data
 {
 	int fd;
 	int type;
 	size_t count;
 	size_t interval;
-	size_t length;
+	size_t datalen;
 	char *hostname;
 	struct sockaddr_in dest;
 	struct sockaddr_in from;
 };
 
-struct packet
-{
-	struct icmp icmp;	
-};
+size_t ping_options;
 
-struct ping *
+void
+ping_echo(struct ping_data *ping, char *hostname)
+{
+	struct ping_stat ping_stat;
+
+	memset(&ping_stat, 0, sizeof(ping_stat));
+	(void)ping;
+	(void)hostname;
+}
+
+struct ping_data *
 init_ping()
 {
-	int sockfd;
+	int fd;
 	struct protoent *proto;
-	struct ping *p;
+	struct ping_data *ping;
 
 	proto = getprotobyname("icmp");
 	if (!proto)
@@ -48,40 +64,83 @@ init_ping()
 		return NULL;
 	}
 
-	sockfd = socket(AF_INET, SOCK_RAW, proto->p_proto);
-	if (sockfd < 0)
+	fd = socket(AF_INET, SOCK_RAW, proto->p_proto);
+	if (fd < 0)
 	{
 		perror("socket");
 		return NULL;
 	}
 
-	p = malloc(sizeof(struct ping));
-	if (!p)
+	ping = malloc(sizeof(struct ping_data));
+	if (!ping)
 	{
+		close(fd);
 		return NULL;
 	}
 
-	memset(p, 0, sizeof(*p));
-	p->fd = sockfd;
-	return p;
+	memset(ping, 0, sizeof(*ping));
+	ping->fd = fd;
+	ping->type = ICMP_ECHO;
+	ping->count = DEFAULT_COUNT;
+	return ping;
+}
+
+static error_t
+parse_opt(int key, char *arg,
+	struct argp_state *state)
+{
+	(void)arg;
+	switch(key)
+	{
+		case 'v':
+			ping_options |= OPTION_VERBOSE;
+			break;
+
+		case ARGP_KEY_NO_ARGS:
+			argp_error(state, "missing host operand");
+
+		/* fallthrough */
+		default:
+			return ARGP_ERR_UNKNOWN;
+	}
+	return 0;
 }
 
 int
 main(int argc, char **argv)
 {
-	if (argc != 2)
-	{
-		printf(
-			"%s: usage error: Destination address required\n",
-			argv[0] + 2);
-		return 1;
-	}
+	struct ping_data *ping;
 
-	// DNS resolver
+	int index;
+	struct argp_option argp_options[] = {
+		{"verbose", 'v', NULL, 0, "verbose output", 0},
+		{0}
+	};
+
+	struct argp argp =
+		{argp_options, parse_opt, NULL, NULL, NULL, NULL, NULL};
+
+	if (argp_parse(&argp, argc, argv, 0, &index, NULL) != 0)
+		return 0;
+
+	argv += index;
+	argc += index;
+
+	ping = init_ping();
+	if (ping == NULL)
+		exit(EXIT_FAILURE);
+
+	while (argc--)
+		ping_echo(ping, *argv++);
+
+	close(ping->fd);
+	free(ping);
+	return 0;
+/*
 	struct hostent *host;
 	struct in_addr **addr_list;
 
-	host = gethostbyname(argv[1]);
+	host = gethostbyname(*argv);
 	if (host == NULL)
 	{
 		herror("gethostbyname");
@@ -98,7 +157,7 @@ main(int argc, char **argv)
 	char	src_addr[14];
 	socklen_t	src_addrlen = sizeof(src_addr);
 	for (int i = 0; addr_list[i]; ++i)
-	{	
+	{
 		printf("%s\n", inet_ntoa(*addr_list[i]));
 	}
 	strcpy(dest_addr, inet_ntoa(*addr_list[0]));
@@ -124,8 +183,8 @@ main(int argc, char **argv)
 	}
 
 	// ICMP
-	char msg[MSG_SIZE];
-	bzero(msg, MSG_SIZE);
+	char msg[DATASIZE];
+	bzero(msg, DATASIZE);
 	struct icmp *icmp_msg = (struct icmp *)msg;
 	printf("struct icmp size = %lu\nstruct icmphdr size = %lu\n",
 		sizeof(struct icmp),
@@ -139,5 +198,5 @@ main(int argc, char **argv)
 	sendto(sockfd, icmp_msg, sizeof(icmp_msg), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
 	recvfrom(sockfd, icmp_msg, sizeof(icmp_msg), 0, (struct sockaddr *)&src_addr, &src_addrlen);
 	close(sockfd);
-	return 0;
+	*/
 }

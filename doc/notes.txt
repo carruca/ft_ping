@@ -30,3 +30,21 @@ steps:
 			+ msg part randomly
 			+ checksum
 		* wait for recv packet
+
+option flags:
+	- f: flood ping (root only) - no wait for replies
+	- l, --preload=NUMBER: send NUMBER packets as fast as possible
+												before falling into normal mode of behavior
+												(root only)
+	- n, --numeric: do not resolve host addresses
+	-w, --timeout=N: stop after N seconds
+	-W, --linger=N: number of seconds to wait for response
+	-p, --pattern=PATTERN: fill ICMP packet with given pattern (hex)
+	-r, --ignore-routing: send directly to a host
+											on an attached network
+	-s, --size=NUMBER: send NUMBER data octets
+	-T, --tos=NUM: set type of service (TOS) to NUM
+	-q: quiet output
+	-ttl=N: specify N as time-to-live
+	--ip-timestamp=FLAG: IP timestamp of type FLAG,
+											which is one of "tsonly" and "tsaddr"
