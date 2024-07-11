@@ -6,6 +6,8 @@ SRCS			= $(addprefix $(SRCSPATH), $(SRCSFILES))
 OBJS			= $(patsubst $(SRCSPATH)%, $(OBJSPATH)%, $(SRCS:.c=.o))
 CC      	= gcc
 CFLAGS  	= -Wall -Werror -Wextra
+LDFLAGS 	=
+FSANITIZE = -fsanitize=address
 
 all: $(NAME)
 
@@ -14,7 +16,7 @@ $(OBJSPATH)%.o: $(SRCSPATH)%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(NAME): $(OBJS)
-	$(CC) $(OBJS) -o $(NAME)
+	$(CC) $(LDFLAGS) $(OBJS) -o $(NAME)
 
 SILENT += print
 print:
@@ -24,6 +26,9 @@ print:
 config:
 	sudo chown root:root $(NAME)
 	sudo chmod u+s $(NAME)
+
+debug: LDFLAGS += $(FSANITIZE)
+debug: $(NAME)
 
 clean:
 	$(RM) $(OBJS)

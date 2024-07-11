@@ -1,4 +1,6 @@
 #include <sys/types.h>
+#include <sys/time.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <linux/if_ether.h>
@@ -14,9 +16,11 @@
 #include <netinet/ip_icmp.h>
 #include <netdb.h>
 #include <argp.h>
+#include <error.h>
 
-#define DEFAULT_COUNT 0
+#define DEFAULT_COUNT  0
 #define OPTION_VERBOSE 0x0001
+#define PING_DATALEN   (64 - ICMP_MINLEN)
 
 struct ping_stat
 {
@@ -30,28 +34,81 @@ struct ping_data
 {
 	int fd;
 	int type;
+	int id;
 	size_t count;
 	size_t interval;
 	size_t datalen;
-	char *hostname;
 	struct sockaddr_in dest;
 	struct sockaddr_in from;
 };
 
 size_t ping_options;
+_Bool stop;
+
+int
+ping_set_dest(struct ping_data *ping, const char *hostname)
+{
+	int rc;
+	struct addrinfo hints, *res;
+
+	memset(&hints, 0, sizeof(struct addrinfo));
+	hints.ai_family = AF_INET;
+
+	rc = getaddrinfo(hostname, NULL, &hints, &res);
+	if (rc != 0)
+		return 1;
+	memcpy(&ping->dest, res->ai_addr, res->ai_addrlen);
+	freeaddrinfo(res);
+	return 0;
+}
 
 void
+ping_send(struct ping_data *ping)
+{
+	(void)ping;
+}
+
+int
+ping_run(struct ping_data *ping)
+{
+/*	fd_set fdset;
+	int fdmax;
+
+	fdmax = ping->fd + 1;
+*/	ping_send(ping);
+	return 0;
+}
+
+void
+ping_print_dns(struct ping_data *ping, char *hostname)
+{
+	printf("PING %s (%s): %zu data bytes",
+		hostname,
+		inet_ntoa(ping->dest.sin_addr),
+		ping->datalen);
+	if (ping_options & OPTION_VERBOSE)
+		printf(", id 0x%x = %i", ping->id, ping->id);
+	printf("\n");
+}
+
+int
 ping_echo(struct ping_data *ping, char *hostname)
 {
 	struct ping_stat ping_stat;
+	int status;
 
 	memset(&ping_stat, 0, sizeof(ping_stat));
-	(void)ping;
-	(void)hostname;
+	if (ping_set_dest(ping, hostname))
+		error(EXIT_FAILURE, 0, "unknown host");
+
+	ping_print_dns(ping, hostname);
+
+	status = ping_run(ping);
+	return status;
 }
 
 struct ping_data *
-init_ping()
+ping_init()
 {
 	int fd;
 	struct protoent *proto;
@@ -81,7 +138,9 @@ init_ping()
 	memset(ping, 0, sizeof(*ping));
 	ping->fd = fd;
 	ping->type = ICMP_ECHO;
+	ping->id = getpid();
 	ping->count = DEFAULT_COUNT;
+	ping->datalen = PING_DATALEN;
 	return ping;
 }
 
@@ -124,9 +183,9 @@ main(int argc, char **argv)
 		return 0;
 
 	argv += index;
-	argc += index;
+	argc -= index;
 
-	ping = init_ping();
+	ping = ping_init();
 	if (ping == NULL)
 		exit(EXIT_FAILURE);
 
