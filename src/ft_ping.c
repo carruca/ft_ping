@@ -9,18 +9,14 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <netinet/in.h>
 #include <netinet/ip.h>
-#include <netinet/udp.h>
-#include <netinet/tcp.h>
 #include <netinet/ip_icmp.h>
 #include <netdb.h>
 #include <argp.h>
 #include <error.h>
 
-#define DEFAULT_COUNT  0
-#define OPTION_VERBOSE 0x0001
-#define PING_DATALEN   (64 - ICMP_MINLEN)
+#define OPTION_VERBOSE 				0x0001
+#define PING_DEFAULT_DATALEN 	(64 - ICMP_MINLEN)
 
 struct ping_stat
 {
@@ -34,15 +30,16 @@ struct ping_data
 {
 	int fd;
 	int type;
-	int id;
-	size_t count;
+	pid_t id;
+	size_t num_xmit; /* packets transmitted */
 	size_t interval;
 	size_t datalen;
-	struct sockaddr_in dest;
+	struct sockaddr_in dest_addr;
 	struct sockaddr_in from;
+	char *buffer;
 };
 
-size_t ping_options;
+unsigned ping_options;
 _Bool stop;
 
 int
@@ -57,25 +54,106 @@ ping_set_dest(struct ping_data *ping, const char *hostname)
 	rc = getaddrinfo(hostname, NULL, &hints, &res);
 	if (rc != 0)
 		return 1;
-	memcpy(&ping->dest, res->ai_addr, res->ai_addrlen);
+	memcpy(&ping->dest_addr, res->ai_addr, res->ai_addrlen);
 	freeaddrinfo(res);
 	return 0;
 }
 
-void
-ping_send(struct ping_data *ping)
+unsigned short
+ping_icmp_cksum(char *buffer, size_t bufsize)
 {
-	(void)ping;
+	register int sum = 0;
+	unsigned short *wp;
+
+	for (wp = (unsigned short *)buffer; bufsize > 1; wp++, bufsize -= 2)
+		sum += *wp;
+	sum = (sum >> 16) + (sum & 0xffff);
+	sum += (sum >> 16);
+	return ~sum;
+}
+
+void
+ping_encode_icmp(struct ping_data *ping, size_t bufsize)
+{
+	struct icmp *icmp;
+
+	icmp = (struct icmp *)ping->buffer;
+	icmp->icmp_type = ping->type;
+	icmp->icmp_code = 0;
+	icmp->icmp_cksum = 0;
+	icmp->icmp_id = htons(ping->id);
+	icmp->icmp_seq = htons(ping->num_xmit);
+
+	icmp->icmp_cksum = ping_icmp_cksum(ping->buffer, bufsize);
+}
+
+
+int
+ping_setbuf(struct ping_data *ping, size_t size)
+{
+	ping->buffer = malloc(size);
+	if (!ping->buffer)
+		return 1;
+	return 0;
+}
+
+int
+ping_xmit(struct ping_data *ping)
+{
+	size_t bufsize;
+	ssize_t nsent;
+
+	bufsize = ping->datalen + ICMP_MINLEN;
+	if (ping_setbuf(ping, bufsize))
+		return 1;
+
+	ping_encode_icmp(ping, bufsize);
+
+	nsent = sendto(ping->fd, ping->buffer, bufsize, 0,
+		(struct sockaddr *)&ping->dest_addr, sizeof(struct sockaddr_in));
+	if (nsent < 0)
+		return 1;
+	++ping->num_xmit;
+	free(ping->buffer);
+	return 0;
+}
+
+void
+ping_recv()
+{
+}
+
+int
+ping_loop(struct ping_data *ping)
+{
+	fd_set fdset;
+	int fdmax, nfds;
+
+	fdmax = ping->fd + 1;
+
+	while (1)
+	{
+
+		FD_ZERO(&fdset);
+		FD_SET(ping->fd, &fdset);
+		nfds = select(fdmax, &fdset, NULL, NULL, NULL);
+		if (nfds == -1)
+			error(EXIT_FAILURE, errno, "select failed");
+		else if (nfds == 1)
+		{
+			ping_recv();
+		}
+	}
+	return 0;
 }
 
 int
 ping_run(struct ping_data *ping)
 {
-/*	fd_set fdset;
-	int fdmax;
+	if (ping_xmit(ping))
+		error(EXIT_FAILURE, errno, "sending packet");
 
-	fdmax = ping->fd + 1;
-*/	ping_send(ping);
+	ping_loop(ping);
 	return 0;
 }
 
@@ -84,7 +162,7 @@ ping_print_dns(struct ping_data *ping, char *hostname)
 {
 	printf("PING %s (%s): %zu data bytes",
 		hostname,
-		inet_ntoa(ping->dest.sin_addr),
+		inet_ntoa(ping->dest_addr.sin_addr),
 		ping->datalen);
 	if (ping_options & OPTION_VERBOSE)
 		printf(", id 0x%x = %i", ping->id, ping->id);
@@ -94,10 +172,8 @@ ping_print_dns(struct ping_data *ping, char *hostname)
 int
 ping_echo(struct ping_data *ping, char *hostname)
 {
-	struct ping_stat ping_stat;
 	int status;
 
-	memset(&ping_stat, 0, sizeof(ping_stat));
 	if (ping_set_dest(ping, hostname))
 		error(EXIT_FAILURE, 0, "unknown host");
 
@@ -139,8 +215,7 @@ ping_init()
 	ping->fd = fd;
 	ping->type = ICMP_ECHO;
 	ping->id = getpid();
-	ping->count = DEFAULT_COUNT;
-	ping->datalen = PING_DATALEN;
+	ping->datalen = PING_DEFAULT_DATALEN;
 	return ping;
 }
 
