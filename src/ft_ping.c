@@ -17,6 +17,9 @@
 
 #define OPTION_VERBOSE 				0x0001
 #define PING_DEFAULT_DATALEN 	(64 - ICMP_MINLEN)
+#define PING_DEFAULT_INTERVAL 1000
+
+#define DEFAULT_COUNT 10
 
 struct ping_stat
 {
@@ -30,17 +33,19 @@ struct ping_data
 {
 	int fd;
 	int type;
+	int count;
 	pid_t id;
-	size_t num_xmit; /* packets transmitted */
 	size_t interval;
 	size_t datalen;
+	size_t num_xmit; /* packets transmitted */
+	size_t num_recv;
 	struct sockaddr_in dest_addr;
-	struct sockaddr_in from;
+	struct sockaddr_in from_addr;
 	char *buffer;
 };
 
-unsigned ping_options;
-_Bool stop;
+unsigned ping_options = 0;
+int g_stop = 0;
 
 int
 ping_set_dest(struct ping_data *ping, const char *hostname)
@@ -76,6 +81,9 @@ void
 ping_encode_icmp(struct ping_data *ping, size_t bufsize)
 {
 	struct icmp *icmp;
+	struct timeval tv;
+
+	gettimeofday(&tv, NULL);
 
 	icmp = (struct icmp *)ping->buffer;
 	icmp->icmp_type = ping->type;
@@ -83,6 +91,7 @@ ping_encode_icmp(struct ping_data *ping, size_t bufsize)
 	icmp->icmp_cksum = 0;
 	icmp->icmp_id = htons(ping->id);
 	icmp->icmp_seq = htons(ping->num_xmit);
+	memcpy(icmp->icmp_data, &tv, sizeof(tv));
 
 	icmp->icmp_cksum = ping_icmp_cksum(ping->buffer, bufsize);
 }
@@ -91,9 +100,12 @@ ping_encode_icmp(struct ping_data *ping, size_t bufsize)
 int
 ping_setbuf(struct ping_data *ping, size_t size)
 {
-	ping->buffer = malloc(size);
 	if (!ping->buffer)
-		return 1;
+	{
+		ping->buffer = malloc(size);
+		if (!ping->buffer)
+			return 1;
+	}
 	return 0;
 }
 
@@ -114,35 +126,55 @@ ping_xmit(struct ping_data *ping)
 	if (nsent < 0)
 		return 1;
 	++ping->num_xmit;
-	free(ping->buffer);
 	return 0;
 }
 
 void
-ping_recv()
+tvsub(struct timeval *out, struct timeval *in)
 {
+	if ((out->tv_usec -= in->tv_usec) < 0)
+	{
+		--out->tv_sec;
+		out->tv_usec += 1000000;
+	}
+	out->tv_sec -= in->tv_sec;
 }
 
 int
-ping_loop(struct ping_data *ping)
+ping_recv(struct ping_data *ping)
 {
-	fd_set fdset;
-	int fdmax, nfds;
+	int nrecv;
+	socklen_t from_addrlen;
+	size_t bufsize;
+	unsigned int hlen;
+	struct ip *ip;
+	struct icmp *icmp;
+	struct timeval tv_out, *tv_in;
+	double triptime;
 
-	fdmax = ping->fd + 1;
-
-	while (1)
+	from_addrlen = sizeof(struct sockaddr_in);
+	bufsize = ping->datalen + ICMP_MINLEN;
+	nrecv = recvfrom(ping->fd, ping->buffer, bufsize, 0,
+		(struct sockaddr *)&ping->from_addr, &from_addrlen);
+	if (nrecv < 0)
+		return 1;
+	ip = (struct ip *)ping->buffer;
+	hlen = ip->ip_hl << 2;
+	icmp = (struct icmp *)(ping->buffer + hlen);
+	if (icmp->icmp_type == ICMP_ECHOREPLY)
 	{
+		gettimeofday(&tv_out, NULL);
+		tv_in = (struct timeval *)icmp->icmp_data;
+		tvsub(&tv_out, tv_in);
+		triptime = tv_out.tv_sec * 1000.0 + tv_out.tv_usec / 1000.0;
 
-		FD_ZERO(&fdset);
-		FD_SET(ping->fd, &fdset);
-		nfds = select(fdmax, &fdset, NULL, NULL, NULL);
-		if (nfds == -1)
-			error(EXIT_FAILURE, errno, "select failed");
-		else if (nfds == 1)
-		{
-			ping_recv();
-		}
+		printf("%i bytes from %s: icmp_seq=%u ttl=%i time=%.3f ms\n",
+			nrecv,
+			inet_ntoa(ping->from_addr.sin_addr),
+			ntohs(icmp->icmp_seq),
+			ip->ip_ttl,
+			triptime);
+		ping->num_recv++;
 	}
 	return 0;
 }
@@ -150,23 +182,29 @@ ping_loop(struct ping_data *ping)
 int
 ping_run(struct ping_data *ping)
 {
-	if (ping_xmit(ping))
-		error(EXIT_FAILURE, errno, "sending packet");
+	fd_set fdset;
+	int fdmax, nfds;
 
-	ping_loop(ping);
+	fdmax = ping->fd + 1;
+	while (ping->count)
+	{
+		if (ping_xmit(ping))
+			error(EXIT_FAILURE, errno, "sending packet");
+
+		FD_ZERO(&fdset);
+		FD_SET(ping->fd, &fdset);
+		nfds = select(fdmax, &fdset, NULL, NULL, NULL);
+		if (nfds == -1)
+			error(EXIT_FAILURE, errno, "select failed");
+		else if (nfds == 1)
+			ping_recv(ping);
+
+		--ping->count;
+		usleep(ping->interval * 1000);
+	}
+	free(ping->buffer);
+	ping->buffer = NULL;
 	return 0;
-}
-
-void
-ping_print_dns(struct ping_data *ping, char *hostname)
-{
-	printf("PING %s (%s): %zu data bytes",
-		hostname,
-		inet_ntoa(ping->dest_addr.sin_addr),
-		ping->datalen);
-	if (ping_options & OPTION_VERBOSE)
-		printf(", id 0x%x = %i", ping->id, ping->id);
-	printf("\n");
 }
 
 int
@@ -177,7 +215,13 @@ ping_echo(struct ping_data *ping, char *hostname)
 	if (ping_set_dest(ping, hostname))
 		error(EXIT_FAILURE, 0, "unknown host");
 
-	ping_print_dns(ping, hostname);
+	printf("PING %s (%s): %zu data bytes",
+		hostname,
+		inet_ntoa(ping->dest_addr.sin_addr),
+		ping->datalen);
+	if (ping_options & OPTION_VERBOSE)
+		printf(", id 0x%x = %i", ping->id, ping->id);
+	printf("\n");
 
 	status = ping_run(ping);
 	return status;
@@ -215,7 +259,9 @@ ping_init()
 	ping->fd = fd;
 	ping->type = ICMP_ECHO;
 	ping->id = getpid();
+	ping->interval = PING_DEFAULT_INTERVAL;
 	ping->datalen = PING_DEFAULT_DATALEN;
+	ping->count = DEFAULT_COUNT;
 	return ping;
 }
 
@@ -270,67 +316,4 @@ main(int argc, char **argv)
 	close(ping->fd);
 	free(ping);
 	return 0;
-/*
-	struct hostent *host;
-	struct in_addr **addr_list;
-
-	host = gethostbyname(*argv);
-	if (host == NULL)
-	{
-		herror("gethostbyname");
-		return 1;
-	}
-
-	printf("hostent struct:\n\t name: %s, addrtype: %d, length: %d\n",
-		host->h_name,
-		host->h_addrtype,
-		host->h_length);
-	printf("addrlist:\n");
-	addr_list = (struct in_addr **)host->h_addr_list;
-	char	dest_addr[14];
-	char	src_addr[14];
-	socklen_t	src_addrlen = sizeof(src_addr);
-	for (int i = 0; addr_list[i]; ++i)
-	{
-		printf("%s\n", inet_ntoa(*addr_list[i]));
-	}
-	strcpy(dest_addr, inet_ntoa(*addr_list[0]));
-
-	// socket
-	int sockfd;
-
-	sockfd = socket(AF_PACKET, SOCK_RAW, IPPROTO_ICMP);
-	if (sockfd < 0)
-	{
-		perror("socket");
-		return 1;
-	}
-
-	//loop
-	//handle CTRL + C
-
-	int ttl = 64;
-	if (setsockopt(sockfd, SOL_SOCKET, IP_TTL, &ttl, sizeof(ttl)) < 0)
-	{
-		perror("setsockopt");
-		exit(EXIT_FAILURE);
-	}
-
-	// ICMP
-	char msg[DATASIZE];
-	bzero(msg, DATASIZE);
-	struct icmp *icmp_msg = (struct icmp *)msg;
-	printf("struct icmp size = %lu\nstruct icmphdr size = %lu\n",
-		sizeof(struct icmp),
-		sizeof(struct icmphdr));
-	icmp_msg->icmp_type = ICMP_ECHO;
-	icmp_msg->icmp_code = 0;
-	icmp_msg->icmp_cksum = 0;
-	icmp_msg->icmp_id = getpid();
-	icmp_msg->icmp_seq = 1;
-
-	sendto(sockfd, icmp_msg, sizeof(icmp_msg), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
-	recvfrom(sockfd, icmp_msg, sizeof(icmp_msg), 0, (struct sockaddr *)&src_addr, &src_addrlen);
-	close(sockfd);
-	*/
 }
