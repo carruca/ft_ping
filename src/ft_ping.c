@@ -143,10 +143,11 @@ tvsub(struct timeval *out, struct timeval *in)
 }
 
 int
-ping_decode_buffer(struct ping_data *ping,
+ping_decode_buffer(struct ping_data *ping, size_t bufsize,
 	struct ip **ipp, struct icmp **icmpp)
 {
 	unsigned int hlen;
+	unsigned short cksum;
 	struct ip *ip;
 	struct icmp *icmp;
 
@@ -156,8 +157,12 @@ ping_decode_buffer(struct ping_data *ping,
 
 	*ipp = ip;
 	*icmpp = icmp;
-	//TODO:
-	//checksum
+
+	cksum = icmp->icmp_cksum;
+	icmp->icmp_cksum = 0;
+	icmp->icmp_cksum = icmp_cksum(ping->buffer, bufsize);
+	if (icmp->icmp_cksum != cksum)
+		return 1;
 	return 0;
 }
 
@@ -212,7 +217,7 @@ ping_recv(struct ping_data *ping)
 	if (nrecv < 0)
 		return 1;
 
-	ping_decode_buffer(ping, &ip, &icmp);
+	ping_decode_buffer(ping, nrecv, &ip, &icmp);
 
 	if (icmp->icmp_type == ICMP_ECHOREPLY)
 		ping_print_timing(ping, ip, icmp, nrecv);
