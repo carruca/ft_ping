@@ -7,7 +7,7 @@ OBJS			= $(patsubst $(SRCSPATH)%, $(OBJSPATH)%, $(SRCS:.c=.o))
 CC      	= gcc
 CFLAGS  	= -Wall -Werror -Wextra
 LDFLAGS 	= -lm
-FSANITIZE = -g3 -fsanitize=address
+FSANITIZE = -fsanitize=address -g3
 
 all: $(NAME)
 

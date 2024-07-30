@@ -15,12 +15,13 @@
 #include <argp.h>
 #include <error.h>
 #include <math.h>
+#include <signal.h>
 
-#define OPTION_VERBOSE 				0x0001
-#define PING_DEFAULT_DATALEN 	(64 - ICMP_MINLEN)
+#define PING_OPTION_VERBOSE 				0x0001
+
+#define PING_DEFAULT_COUNT 		0
 #define PING_DEFAULT_INTERVAL 1000
-
-#define DEFAULT_COUNT 10
+#define PING_DEFAULT_DATALEN 	(64 - ICMP_MINLEN)
 
 struct ping_stat
 {
@@ -34,8 +35,8 @@ struct ping_data
 {
 	int fd;
 	int type;
-	int count;
 	pid_t id;
+	size_t count;
 	size_t interval;
 	size_t datalen;
 	size_t num_xmit;
@@ -46,7 +47,7 @@ struct ping_data
 	char *buffer;
 };
 
-unsigned ping_options = 0;
+unsigned g_ping_options = 0;
 int g_stop = 0;
 
 int
@@ -231,32 +232,56 @@ ping_print_stat(struct ping_data *ping, char *hostname)
 	double avg;
 	double vari;
 
-	avg = ping->ping_stat.tsum / ping->num_recv;
-	vari = ping->ping_stat.tsumsq / ping->num_recv - avg * avg;
-
 	printf("--- %s ping statistics ---\n", hostname);
-
 	printf("%lu packets transmitted, ", ping->num_xmit);
-	printf("%lu packets received, ", ping->num_recv);
-	printf("%d%% packet loss",
-		(int)((ping->num_xmit - ping->num_recv) * 100 / ping->num_xmit));
+	printf("%lu packets received", ping->num_recv);
+
+	if (ping->num_xmit)
+	{
+		printf(", %d%% packet loss",
+			(int)((ping->num_xmit - ping->num_recv) * 100 / ping->num_xmit));
+	}
 	printf("\n");
 
-	printf("round-trip min/avg/max/stddev = %.3f/%.3f/%.3f/%.3f ms\n",
+	if (ping->num_recv)
+	{
+		avg = ping->ping_stat.tsum / ping->num_recv;
+		vari = ping->ping_stat.tsumsq / ping->num_recv - avg * avg;
+
+		printf("round-trip min/avg/max/stddev = %.3f/%.3f/%.3f/%.3f ms\n",
 		ping->ping_stat.tmin,
 		avg,
 		ping->ping_stat.tmax,
 		sqrt(vari));
+	}
+}
+
+void
+ping_reset(struct ping_data *ping)
+{
+	ping->num_xmit = 0;
+	ping->num_recv = 0;
+	free(ping->buffer);
+	ping->buffer = NULL;
+}
+
+void
+sig_handler(int signal)
+{
+	if (signal == SIGINT)
+		g_stop = 1;
 }
 
 int
-ping_run(struct ping_data *ping, char *hostname)
+ping_loop(struct ping_data *ping, char *hostname)
 {
 	fd_set fdset;
 	int fdmax, nfds;
 
+	signal(SIGINT, sig_handler);
+
 	fdmax = ping->fd + 1;
-	while (ping->count)
+	while (!g_stop)
 	{
 		if (ping_xmit(ping))
 			error(EXIT_FAILURE, errno, "sending packet");
@@ -268,20 +293,19 @@ ping_run(struct ping_data *ping, char *hostname)
 			error(EXIT_FAILURE, errno, "select failed");
 		else if (nfds == 1)
 			ping_recv(ping);
+		if (ping->count == ping->num_xmit)
+				break;
 
-		--ping->count;
 		usleep(ping->interval * 1000);
 	}
 
 	ping_print_stat(ping, hostname);
-
-	free(ping->buffer);
-	ping->buffer = NULL;
+	ping_reset(ping);
 	return 0;
 }
 
 int
-ping_echo(struct ping_data *ping, char *hostname)
+ping_run(struct ping_data *ping, char *hostname)
 {
 	if (ping_set_dest(ping, hostname))
 		error(EXIT_FAILURE, 0, "unknown host");
@@ -290,11 +314,11 @@ ping_echo(struct ping_data *ping, char *hostname)
 		hostname,
 		inet_ntoa(ping->dest_addr.sin_addr),
 		ping->datalen);
-	if (ping_options & OPTION_VERBOSE)
+	if (g_ping_options & PING_OPTION_VERBOSE)
 		printf(", id 0x%x = %i", ping->id, ping->id);
 	printf("\n");
 
-	return ping_run(ping, hostname);
+	return ping_loop(ping, hostname);
 }
 
 struct ping_data *
@@ -331,7 +355,9 @@ ping_init()
 	ping->id = getpid();
 	ping->interval = PING_DEFAULT_INTERVAL;
 	ping->datalen = PING_DEFAULT_DATALEN;
-	ping->count = DEFAULT_COUNT;
+	ping->count = PING_DEFAULT_COUNT;
+	ping->num_recv = 0;
+	ping->num_xmit = 0;
 	return ping;
 }
 
@@ -343,7 +369,7 @@ parse_opt(int key, char *arg,
 	switch(key)
 	{
 		case 'v':
-			ping_options |= OPTION_VERBOSE;
+			g_ping_options |= PING_OPTION_VERBOSE;
 			break;
 
 		case ARGP_KEY_NO_ARGS:
@@ -356,20 +382,22 @@ parse_opt(int key, char *arg,
 	return 0;
 }
 
+
+struct argp_option argp_options[] = {
+	{"verbose", 'v', NULL, 0, "verbose output", 0},
+	{0}
+};
+
+struct argp argp =
+	{argp_options, parse_opt, NULL, NULL, NULL, NULL, NULL};
+
 int
 main(int argc, char **argv)
 {
+	int status;
 	struct ping_data *ping;
 
 	int index;
-	struct argp_option argp_options[] = {
-		{"verbose", 'v', NULL, 0, "verbose output", 0},
-		{0}
-	};
-
-	struct argp argp =
-		{argp_options, parse_opt, NULL, NULL, NULL, NULL, NULL};
-
 	if (argp_parse(&argp, argc, argv, 0, &index, NULL) != 0)
 		return 0;
 
@@ -381,9 +409,9 @@ main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 
 	while (argc--)
-		ping_echo(ping, *argv++);
+		status |= ping_run(ping, *argv++);
 
 	close(ping->fd);
 	free(ping);
-	return 0;
+	return status;
 }
