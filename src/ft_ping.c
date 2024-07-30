@@ -103,10 +103,10 @@ ping_encode_icmp(struct ping_data *ping, size_t bufsize)
 int
 ping_setbuf(struct ping_data *ping, size_t size)
 {
-	if (!ping->buffer)
+	if (ping->buffer == NULL)
 	{
 		ping->buffer = malloc(size);
-		if (!ping->buffer)
+		if (ping->buffer == NULL)
 			return 1;
 	}
 	return 0;
@@ -256,11 +256,18 @@ ping_print_stat(struct ping_data *ping, char *hostname)
 	}
 }
 
+
 void
-ping_reset(struct ping_data *ping)
+ping_reset_data(struct ping_data *ping)
 {
+	ping->ping_stat.tmin = 0.0;
+	ping->ping_stat.tmax = 0.0;
+	ping->ping_stat.tsum = 0.0;
+	ping->ping_stat.tsumsq = 0.0;
+
 	ping->num_xmit = 0;
 	ping->num_recv = 0;
+
 	free(ping->buffer);
 	ping->buffer = NULL;
 }
@@ -300,7 +307,7 @@ ping_loop(struct ping_data *ping, char *hostname)
 	}
 
 	ping_print_stat(ping, hostname);
-	ping_reset(ping);
+	ping_reset_data(ping);
 	return 0;
 }
 
@@ -329,7 +336,7 @@ ping_init()
 	struct ping_data *ping;
 
 	proto = getprotobyname("icmp");
-	if (!proto)
+	if (proto == NULL)
 	{
 		perror("getprotobyname");
 		return NULL;
@@ -343,7 +350,7 @@ ping_init()
 	}
 
 	ping = malloc(sizeof(struct ping_data));
-	if (!ping)
+	if (ping == NULL)
 	{
 		close(fd);
 		return NULL;
@@ -356,8 +363,6 @@ ping_init()
 	ping->interval = PING_DEFAULT_INTERVAL;
 	ping->datalen = PING_DEFAULT_DATALEN;
 	ping->count = PING_DEFAULT_COUNT;
-	ping->num_recv = 0;
-	ping->num_xmit = 0;
 	return ping;
 }
 
