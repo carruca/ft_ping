@@ -14,6 +14,7 @@
 #include <netdb.h>
 #include <argp.h>
 #include <error.h>
+#include <math.h>
 
 #define OPTION_VERBOSE 				0x0001
 #define PING_DEFAULT_DATALEN 	(64 - ICMP_MINLEN)
@@ -37,8 +38,9 @@ struct ping_data
 	pid_t id;
 	size_t interval;
 	size_t datalen;
-	size_t num_xmit; /* packets transmitted */
+	size_t num_xmit;
 	size_t num_recv;
+	struct ping_stat ping_stat;
 	struct sockaddr_in dest_addr;
 	struct sockaddr_in from_addr;
 	char *buffer;
@@ -65,7 +67,7 @@ ping_set_dest(struct ping_data *ping, const char *hostname)
 }
 
 unsigned short
-ping_icmp_cksum(char *buffer, size_t bufsize)
+icmp_cksum(char *buffer, size_t bufsize)
 {
 	register int sum = 0;
 	unsigned short *wp;
@@ -93,7 +95,7 @@ ping_encode_icmp(struct ping_data *ping, size_t bufsize)
 	icmp->icmp_seq = htons(ping->num_xmit);
 	memcpy(icmp->icmp_data, &tv, sizeof(tv));
 
-	icmp->icmp_cksum = ping_icmp_cksum(ping->buffer, bufsize);
+	icmp->icmp_cksum = icmp_cksum(ping->buffer, bufsize);
 }
 
 
@@ -141,16 +143,67 @@ tvsub(struct timeval *out, struct timeval *in)
 }
 
 int
+ping_decode_buffer(struct ping_data *ping,
+	struct ip **ipp, struct icmp **icmpp)
+{
+	unsigned int hlen;
+	struct ip *ip;
+	struct icmp *icmp;
+
+	ip = (struct ip *)ping->buffer;
+	hlen = ip->ip_hl << 2;
+	icmp = (struct icmp *)(ping->buffer + hlen);
+
+	*ipp = ip;
+	*icmpp = icmp;
+	//TODO:
+	//checksum
+	return 0;
+}
+
+void
+ping_set_stat(struct ping_stat *ping_stat, double triptime)
+{
+	if (!ping_stat->tmin || triptime < ping_stat->tmin)
+		ping_stat->tmin = triptime;
+	if (triptime > ping_stat->tmax)
+		ping_stat->tmax = triptime;
+
+	ping_stat->tsum += triptime;
+	ping_stat->tsumsq += triptime * triptime;
+}
+
+int
+ping_print_timing(struct ping_data *ping,
+	struct ip *ip, struct icmp *icmp, int datalen)
+{
+	struct timeval tv_out, *tv_in;
+	double triptime;
+
+	gettimeofday(&tv_out, NULL);
+	tv_in = (struct timeval *)icmp->icmp_data;
+	tvsub(&tv_out, tv_in);
+	triptime = tv_out.tv_sec * 1000.0 + tv_out.tv_usec / 1000.0;
+	ping_set_stat(&ping->ping_stat, triptime);
+
+	printf("%i bytes from %s: icmp_seq=%u ttl=%i time=%.3f ms\n",
+		datalen,
+		inet_ntoa(ping->from_addr.sin_addr),
+		ntohs(icmp->icmp_seq),
+		ip->ip_ttl,
+		triptime);
+	ping->num_recv++;
+	return 0;
+}
+
+int
 ping_recv(struct ping_data *ping)
 {
 	int nrecv;
 	socklen_t from_addrlen;
 	size_t bufsize;
-	unsigned int hlen;
 	struct ip *ip;
 	struct icmp *icmp;
-	struct timeval tv_out, *tv_in;
-	double triptime;
 
 	from_addrlen = sizeof(struct sockaddr_in);
 	bufsize = ping->datalen + ICMP_MINLEN;
@@ -158,29 +211,41 @@ ping_recv(struct ping_data *ping)
 		(struct sockaddr *)&ping->from_addr, &from_addrlen);
 	if (nrecv < 0)
 		return 1;
-	ip = (struct ip *)ping->buffer;
-	hlen = ip->ip_hl << 2;
-	icmp = (struct icmp *)(ping->buffer + hlen);
-	if (icmp->icmp_type == ICMP_ECHOREPLY)
-	{
-		gettimeofday(&tv_out, NULL);
-		tv_in = (struct timeval *)icmp->icmp_data;
-		tvsub(&tv_out, tv_in);
-		triptime = tv_out.tv_sec * 1000.0 + tv_out.tv_usec / 1000.0;
 
-		printf("%i bytes from %s: icmp_seq=%u ttl=%i time=%.3f ms\n",
-			nrecv,
-			inet_ntoa(ping->from_addr.sin_addr),
-			ntohs(icmp->icmp_seq),
-			ip->ip_ttl,
-			triptime);
-		ping->num_recv++;
-	}
+	ping_decode_buffer(ping, &ip, &icmp);
+
+	if (icmp->icmp_type == ICMP_ECHOREPLY)
+		ping_print_timing(ping, ip, icmp, nrecv);
+
 	return 0;
 }
 
+void
+ping_print_stat(struct ping_data *ping, char *hostname)
+{
+	double avg;
+	double vari;
+
+	avg = ping->ping_stat.tsum / ping->num_recv;
+	vari = ping->ping_stat.tsumsq / ping->num_recv - avg * avg;
+
+	printf("--- %s ping statistics ---\n", hostname);
+
+	printf("%lu packets transmitted, ", ping->num_xmit);
+	printf("%lu packets received, ", ping->num_recv);
+	printf("%d%% packet loss",
+		(int)((ping->num_xmit - ping->num_recv) * 100 / ping->num_xmit));
+	printf("\n");
+
+	printf("round-trip min/avg/max/stddev = %.3f/%.3f/%.3f/%.3f ms\n",
+		ping->ping_stat.tmin,
+		avg,
+		ping->ping_stat.tmax,
+		sqrt(vari));
+}
+
 int
-ping_run(struct ping_data *ping)
+ping_run(struct ping_data *ping, char *hostname)
 {
 	fd_set fdset;
 	int fdmax, nfds;
@@ -202,6 +267,9 @@ ping_run(struct ping_data *ping)
 		--ping->count;
 		usleep(ping->interval * 1000);
 	}
+
+	ping_print_stat(ping, hostname);
+
 	free(ping->buffer);
 	ping->buffer = NULL;
 	return 0;
@@ -210,8 +278,6 @@ ping_run(struct ping_data *ping)
 int
 ping_echo(struct ping_data *ping, char *hostname)
 {
-	int status;
-
 	if (ping_set_dest(ping, hostname))
 		error(EXIT_FAILURE, 0, "unknown host");
 
@@ -223,8 +289,7 @@ ping_echo(struct ping_data *ping, char *hostname)
 		printf(", id 0x%x = %i", ping->id, ping->id);
 	printf("\n");
 
-	status = ping_run(ping);
-	return status;
+	return ping_run(ping, hostname);
 }
 
 struct ping_data *
