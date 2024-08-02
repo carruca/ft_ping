@@ -81,6 +81,13 @@ icmp_cksum(char *buffer, size_t bufsize)
 }
 
 void
+ping_print_icmp(struct icmp *icmp)
+{
+	printf("icmp_type=%d, icmp_code=%d, icmp_id=%d, icmp_seq=%d\n",
+		icmp->icmp_type, icmp->icmp_code, icmp->icmp_id, icmp->icmp_seq);
+}
+
+void
 ping_encode_icmp(struct ping_data *ping, size_t bufsize)
 {
 	struct icmp *icmp;
@@ -220,9 +227,15 @@ ping_recv(struct ping_data *ping)
 
 	ping_decode_buffer(ping, nrecv, &ip, &icmp);
 
-	if (icmp->icmp_type == ICMP_ECHOREPLY)
+	if (icmp->icmp_type == ICMP_ECHOREPLY
+			&& icmp->icmp_id == ntohs(ping->id))
+	{
 		ping_print_timing(ping, ip, icmp, nrecv);
+		usleep(ping->interval * 1000);
 
+		if (!g_stop && ping_xmit(ping))
+			error(EXIT_FAILURE, errno, "sending packet");
+	}
 	return 0;
 }
 
@@ -284,26 +297,27 @@ ping_loop(struct ping_data *ping, char *hostname)
 {
 	fd_set fdset;
 	int fdmax, nfds;
+	struct timeval timeout;
 
 	signal(SIGINT, sig_handler);
 
+	if (ping_xmit(ping))
+		error(EXIT_FAILURE, errno, "sending packet");
+
 	fdmax = ping->fd + 1;
+	timeout.tv_sec = 1;
+	timeout.tv_usec = 0;
+
 	while (!g_stop)
 	{
-		if (ping_xmit(ping))
-			error(EXIT_FAILURE, errno, "sending packet");
-
 		FD_ZERO(&fdset);
 		FD_SET(ping->fd, &fdset);
-		nfds = select(fdmax, &fdset, NULL, NULL, NULL);
+
+		nfds = select(fdmax, &fdset, NULL, NULL, &timeout);
 		if (nfds == -1)
 			error(EXIT_FAILURE, errno, "select failed");
 		else if (nfds == 1)
 			ping_recv(ping);
-		if (ping->count == ping->num_xmit)
-				break;
-
-		usleep(ping->interval * 1000);
 	}
 
 	ping_print_stat(ping, hostname);
@@ -387,22 +401,21 @@ parse_opt(int key, char *arg,
 	return 0;
 }
 
-
-struct argp_option argp_options[] = {
-	{"verbose", 'v', NULL, 0, "verbose output", 0},
-	{0}
-};
-
-struct argp argp =
-	{argp_options, parse_opt, NULL, NULL, NULL, NULL, NULL};
-
 int
 main(int argc, char **argv)
 {
-	int status;
+	int index;
 	struct ping_data *ping;
 
-	int index;
+	char args_doc[] = "HOST ...";
+	char doc[] = "Send ICMP ECHO_REQUESTED packets to network hosts.";
+	struct argp_option argp_options[] = {
+		{"verbose", 'v', NULL, 0, "verbose output", 0},
+		{0}
+	};
+	struct argp argp =
+		{argp_options, parse_opt, args_doc, doc, NULL, NULL, NULL};
+
 	if (argp_parse(&argp, argc, argv, 0, &index, NULL) != 0)
 		return 0;
 
@@ -414,9 +427,9 @@ main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 
 	while (argc--)
-		status |= ping_run(ping, *argv++);
+		ping_run(ping, *argv++);
 
 	close(ping->fd);
 	free(ping);
-	return status;
+	return 0;
 }
