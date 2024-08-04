@@ -16,12 +16,14 @@
 #include <error.h>
 #include <math.h>
 #include <signal.h>
+#include <stdlib.h>
 
 #define PING_OPTION_VERBOSE 				0x0001
 
 #define PING_DEFAULT_COUNT 		0
 #define PING_DEFAULT_INTERVAL 1000
 #define PING_DEFAULT_DATALEN 	(64 - ICMP_MINLEN)
+#define PING_DEFAULT_MAXTTL 	255
 
 struct ping_stat
 {
@@ -49,6 +51,7 @@ struct ping_data
 
 unsigned g_ping_options = 0;
 int g_stop = 0;
+int g_ttl = 0;
 
 int
 ping_set_dest(struct ping_data *ping, const char *hostname)
@@ -380,6 +383,29 @@ ping_init()
 	return ping;
 }
 
+enum {
+	ARG_TTL = 256,
+};
+
+size_t
+ping_cvt_number(const char *arg, size_t maxval)
+{
+	char *endptr;
+	unsigned long int n;
+
+	n = strtoul(arg, &endptr, 0);
+	if (*endptr)
+		error(EXIT_FAILURE, 0, "invalid value (`%s' near `%s')", arg, endptr);
+
+	if (n == 0)
+		error(EXIT_FAILURE, 0, "option value too small: %s", arg);
+
+	if (maxval && n > maxval)
+		error(EXIT_FAILURE, 0, "option value too big: %s", arg);
+	return n;
+}
+
+
 static error_t
 parse_opt(int key, char *arg,
 	struct argp_state *state)
@@ -389,6 +415,10 @@ parse_opt(int key, char *arg,
 	{
 		case 'v':
 			g_ping_options |= PING_OPTION_VERBOSE;
+			break;
+
+		case ARG_TTL:
+			g_ttl = ping_cvt_number(arg, PING_DEFAULT_MAXTTL);
 			break;
 
 		case ARGP_KEY_NO_ARGS:
@@ -411,6 +441,7 @@ main(int argc, char **argv)
 	char doc[] = "Send ICMP ECHO_REQUESTED packets to network hosts.";
 	struct argp_option argp_options[] = {
 		{"verbose", 'v', NULL, 0, "verbose output", 0},
+		{"ttl", ARG_TTL, "N", 0, "specify N as time-to-alive", 0},
 		{0}
 	};
 	struct argp argp =
@@ -419,12 +450,16 @@ main(int argc, char **argv)
 	if (argp_parse(&argp, argc, argv, 0, &index, NULL) != 0)
 		return 0;
 
-	argv += index;
-	argc -= index;
-
 	ping = ping_init();
 	if (ping == NULL)
 		exit(EXIT_FAILURE);
+
+	if (g_ttl > 0)
+		if (setsockopt(ping->fd, IPPROTO_IP, IP_TTL, &g_ttl, sizeof(g_ttl)) < 0)
+			error(0, errno, "setsockopt(IP_TTL)");
+
+	argv += index;
+	argc -= index;
 
 	while (argc--)
 		ping_run(ping, *argv++);
