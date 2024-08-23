@@ -30,6 +30,9 @@ config: $(NAME)
 debug: LDFLAGS += $(FSANITIZE)
 debug: $(NAME)
 
+tags:
+	ctags $(SRCS)
+
 clean:
 	$(RM) $(OBJS)
 

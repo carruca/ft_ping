@@ -49,6 +49,15 @@ struct ping_data
 	char *buffer;
 };
 
+struct icmp_diag
+{
+	int type;
+	int code;
+	char *description;
+	void (*function)(struct ping_data *ping,
+		struct ip *ip, struct icmp *icmp, size_t datalen);
+};
+
 unsigned g_ping_options = 0;
 int g_stop = 0;
 int g_ttl = 0;
@@ -84,8 +93,11 @@ icmp_cksum(char *buffer, size_t bufsize)
 }
 
 void
-ping_print_icmp(struct icmp *icmp)
+ping_print_icmp(struct ping_data *ping, struct ip *ip, struct icmp *icmp, size_t datalen)
 {
+	(void)ping;
+	(void)ip;
+	(void)datalen;
 	printf("icmp_type=%d, icmp_code=%d, icmp_id=%d, icmp_seq=%d\n",
 		icmp->icmp_type, icmp->icmp_code, icmp->icmp_id, icmp->icmp_seq);
 }
@@ -189,9 +201,9 @@ ping_set_stat(struct ping_stat *ping_stat, double triptime)
 	ping_stat->tsumsq += triptime * triptime;
 }
 
-int
+void
 ping_print_timing(struct ping_data *ping,
-	struct ip *ip, struct icmp *icmp, int datalen)
+	struct ip *ip, struct icmp *icmp, size_t datalen)
 {
 	struct timeval tv_out, *tv_in;
 	double triptime;
@@ -202,15 +214,20 @@ ping_print_timing(struct ping_data *ping,
 	triptime = tv_out.tv_sec * 1000.0 + tv_out.tv_usec / 1000.0;
 	ping_set_stat(&ping->ping_stat, triptime);
 
-	printf("%i bytes from %s: icmp_seq=%u ttl=%i time=%.3f ms\n",
+	printf("%lu bytes from %s: icmp_seq=%u ttl=%i time=%.3f ms\n",
 		datalen,
 		inet_ntoa(ping->from_addr.sin_addr),
 		ntohs(icmp->icmp_seq),
 		ip->ip_ttl,
 		triptime);
 	ping->num_recv++;
-	return 0;
 }
+
+struct icmp_diag g_icmp_diag[] = {
+	{ICMP_ECHOREPLY, ICMP_ECHOREPLY, "Echo Reply", ping_print_timing},
+	{ICMP_TIME_EXCEEDED, ICMP_EXC_TTL, "Time to live exceeded", ping_print_icmp},
+	{0}
+};
 
 int
 ping_recv(struct ping_data *ping)
@@ -220,6 +237,7 @@ ping_recv(struct ping_data *ping)
 	size_t bufsize;
 	struct ip *ip;
 	struct icmp *icmp;
+	struct icmp_diag *diag;
 
 	from_addrlen = sizeof(struct sockaddr_in);
 	bufsize = ping->datalen + ICMP_MINLEN;
@@ -230,14 +248,19 @@ ping_recv(struct ping_data *ping)
 
 	ping_decode_buffer(ping, nrecv, &ip, &icmp);
 
-	if (icmp->icmp_type == ICMP_ECHOREPLY
-			&& icmp->icmp_id == ntohs(ping->id))
+	if (icmp->icmp_id == ntohs(ping->id))
 	{
-		ping_print_timing(ping, ip, icmp, nrecv);
-		usleep(ping->interval * 1000);
+		for (diag = g_icmp_diag; diag->description != NULL; diag++)
+		{
+			if (diag->type == icmp->icmp_type)
+			{
+				diag->function(ping, ip, icmp, nrecv);
+				usleep(ping->interval * 1000);
 
-		if (!g_stop && ping_xmit(ping))
-			error(EXIT_FAILURE, errno, "sending packet");
+				if (!g_stop && ping_xmit(ping))
+					error(EXIT_FAILURE, errno, "sending packet");
+			}
+		}
 	}
 	return 0;
 }
@@ -410,7 +433,6 @@ static error_t
 parse_opt(int key, char *arg,
 	struct argp_state *state)
 {
-	(void)arg;
 	switch(key)
 	{
 		case 'v':
