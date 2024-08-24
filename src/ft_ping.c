@@ -49,15 +49,6 @@ struct ping_data
 	char *buffer;
 };
 
-struct icmp_diag
-{
-	int type;
-	int code;
-	char *description;
-	void (*function)(struct ping_data *ping,
-		struct ip *ip, struct icmp *icmp, size_t datalen);
-};
-
 unsigned g_ping_options = 0;
 int g_stop = 0;
 int g_ttl = 0;
@@ -90,16 +81,6 @@ icmp_cksum(char *buffer, size_t bufsize)
 	sum = (sum >> 16) + (sum & 0xffff);
 	sum += (sum >> 16);
 	return ~sum;
-}
-
-void
-ping_print_icmp(struct ping_data *ping, struct ip *ip, struct icmp *icmp, size_t datalen)
-{
-	(void)ping;
-	(void)ip;
-	(void)datalen;
-	printf("icmp_type=%d, icmp_code=%d, icmp_id=%d, icmp_seq=%d\n",
-		icmp->icmp_type, icmp->icmp_code, icmp->icmp_id, icmp->icmp_seq);
 }
 
 void
@@ -202,7 +183,7 @@ ping_set_stat(struct ping_stat *ping_stat, double triptime)
 }
 
 void
-ping_print_timing(struct ping_data *ping,
+ping_echo_print(struct ping_data *ping,
 	struct ip *ip, struct icmp *icmp, size_t datalen)
 {
 	struct timeval tv_out, *tv_in;
@@ -223,11 +204,50 @@ ping_print_timing(struct ping_data *ping,
 	ping->num_recv++;
 }
 
-struct icmp_diag g_icmp_diag[] = {
-	{ICMP_ECHOREPLY, ICMP_ECHOREPLY, "Echo Reply", ping_print_timing},
-	{ICMP_TIME_EXCEEDED, ICMP_EXC_TTL, "Time to live exceeded", ping_print_icmp},
-	{0}
-};
+void
+ping_icmp_print(struct ping_data *ping,
+	struct ip *ip_org, struct icmp *icmp, size_t datalen, char *descp)
+{
+	size_t i, hlen;
+	unsigned char *cp;
+	struct ip *ip;
+	int type, code;
+
+	ip = &icmp->icmp_ip;
+	hlen = ip->ip_hl << 2;
+	cp = (unsigned char *)ip + hlen;
+	type = *cp;
+	code = *(cp + 1);
+
+	printf("%lu bytes from %s: %s\n",
+		ntohs(ip_org->ip_len) - hlen,
+		inet_ntoa(ping->from_addr.sin_addr),
+		descp);
+
+	if (g_ping_options & PING_OPTION_VERBOSE)
+	{
+		printf("IP hdr DUMP:\n");
+		for (i = 0; i < sizeof(*ip); ++i)
+			printf("%02x%s",
+				*((unsigned char *)ip + i),
+				(i % 2) ? " " : "");
+		printf("\n");
+
+		printf("Vr HL TOS  Len   ID Flg  off TTL Pro  cks      Src\tDst\tData\n");
+		printf(" %1x %1x %02x", ip->ip_v, ip->ip_hl, ip->ip_tos);
+		printf(" %04x %04x", ntohs(ip->ip_len), ntohs(ip->ip_id));
+		printf("   %1x %04x", (ntohs(ip->ip_off) & 0xe000) >> 13, ntohs(ip->ip_off) & 0x1fff);
+		printf("  %02x  %02x %04x", ip->ip_ttl, ip->ip_p, ntohs(ip->ip_sum));
+		printf(" %s ", inet_ntoa(*((struct in_addr *)&ip->ip_src)));
+		printf(" %s ", inet_ntoa(*((struct in_addr *)&ip->ip_dst)));
+		printf("\n");
+
+		printf("ICMP: type %u, code %u, size %lu", type, code, datalen);
+		printf(" , id 0x%04x, seq 0x%04x", *(cp + 4) * 256 + *(cp + 5),
+			*(cp + 6) * 256 + *(cp + 7));
+		printf("\n");
+	}
+}
 
 int
 ping_recv(struct ping_data *ping)
@@ -237,7 +257,6 @@ ping_recv(struct ping_data *ping)
 	size_t bufsize;
 	struct ip *ip;
 	struct icmp *icmp;
-	struct icmp_diag *diag;
 
 	from_addrlen = sizeof(struct sockaddr_in);
 	bufsize = ping->datalen + ICMP_MINLEN;
@@ -248,19 +267,17 @@ ping_recv(struct ping_data *ping)
 
 	ping_decode_buffer(ping, nrecv, &ip, &icmp);
 
-	if (icmp->icmp_id == ntohs(ping->id))
+	switch(icmp->icmp_type)
 	{
-		for (diag = g_icmp_diag; diag->description != NULL; diag++)
-		{
-			if (diag->type == icmp->icmp_type)
-			{
-				diag->function(ping, ip, icmp, nrecv);
-				usleep(ping->interval * 1000);
+		case ICMP_ECHOREPLY:
+			if (ntohs(icmp->icmp_id) != ping->id)
+				return -1;
+			ping_echo_print(ping, ip, icmp, nrecv);
+			break;
 
-				if (!g_stop && ping_xmit(ping))
-					error(EXIT_FAILURE, errno, "sending packet");
-			}
-		}
+		case ICMP_TIME_EXCEEDED:
+			ping_icmp_print(ping, ip, icmp, nrecv, "Time to live exceeded");
+			break;
 	}
 	return 0;
 }
@@ -323,7 +340,6 @@ ping_loop(struct ping_data *ping, char *hostname)
 {
 	fd_set fdset;
 	int fdmax, nfds;
-	struct timeval timeout;
 
 	signal(SIGINT, sig_handler);
 
@@ -331,19 +347,24 @@ ping_loop(struct ping_data *ping, char *hostname)
 		error(EXIT_FAILURE, errno, "sending packet");
 
 	fdmax = ping->fd + 1;
-	timeout.tv_sec = 1;
-	timeout.tv_usec = 0;
 
 	while (!g_stop)
 	{
 		FD_ZERO(&fdset);
 		FD_SET(ping->fd, &fdset);
 
-		nfds = select(fdmax, &fdset, NULL, NULL, &timeout);
+		nfds = select(fdmax, &fdset, NULL, NULL, NULL);
 		if (nfds == -1)
 			error(EXIT_FAILURE, errno, "select failed");
 		else if (nfds == 1)
-			ping_recv(ping);
+		{
+			if (!ping_recv(ping))
+			{
+				usleep(ping->interval * 1000);
+				if (!g_stop && ping_xmit(ping))
+					error(EXIT_FAILURE, errno, "sending packet");
+			}
+		}
 	}
 
 	ping_print_stat(ping, hostname);
