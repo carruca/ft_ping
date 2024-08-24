@@ -4,8 +4,9 @@ OBJSPATH	= obj/
 SRCSFILES	= ft_ping.c
 SRCS			= $(addprefix $(SRCSPATH), $(SRCSFILES))
 OBJS			= $(patsubst $(SRCSPATH)%, $(OBJSPATH)%, $(SRCS:.c=.o))
+INC 			= -I.
 CC      	= gcc
-CFLAGS  	= -Wall -Werror -Wextra
+CFLAGS  	= -Wall -Werror -Wextra $(INC)
 LDFLAGS 	= -lm
 FSANITIZE = -fsanitize=address -g3
 
