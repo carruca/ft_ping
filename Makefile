@@ -6,7 +6,7 @@ SRCS			= $(addprefix $(SRCSPATH), $(SRCSFILES))
 OBJS			= $(patsubst $(SRCSPATH)%, $(OBJSPATH)%, $(SRCS:.c=.o))
 INC 			= -I.
 CC      	= gcc
-CFLAGS  	= -Wall -Werror -Wextra $(INC)
+CFLAGS  	= -Wall -Werror -Wextra
 LDFLAGS 	= -lm
 FSANITIZE = -fsanitize=address -g3
 
@@ -14,7 +14,7 @@ all: $(NAME)
 
 $(OBJSPATH)%.o: $(SRCSPATH)%.c
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(INC) -c $< -o $@
 
 $(NAME): $(OBJS)
 	$(CC) $(OBJS) -o $(NAME) $(LDFLAGS)
