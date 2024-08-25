@@ -1,12 +1,20 @@
 NAME    	= ft_ping
+
 SRCSPATH	= src/
 OBJSPATH	= obj/
-SRCSFILES	= ft_ping.c
+SRCSFILES	= \
+						main.c 		\
+						init.c 		\
+						run.c 		\
+						recv.c 		\
+						xmit.c 		\
+						utils.c
 SRCS			= $(addprefix $(SRCSPATH), $(SRCSFILES))
 OBJS			= $(patsubst $(SRCSPATH)%, $(OBJSPATH)%, $(SRCS:.c=.o))
-INC 			= -I.
+
 CC      	= gcc
 CFLAGS  	= -Wall -Werror -Wextra
+INC 			= -I.
 LDFLAGS 	= -lm
 FSANITIZE = -fsanitize=address -g3
 
