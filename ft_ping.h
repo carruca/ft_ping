@@ -52,6 +52,10 @@ struct ping_data
 	char *buffer;
 };
 
+enum {
+	ARG_TTL = 256,
+};
+
 extern unsigned g_ping_options;
 extern int g_stop;
 extern int g_ttl;

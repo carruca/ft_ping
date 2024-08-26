@@ -4,10 +4,6 @@ unsigned g_ping_options = 0;
 int g_stop = 0;
 int g_ttl = 0;
 
-enum {
-	ARG_TTL = 256,
-};
-
 static error_t
 parse_opt(int key, char *arg,
 	struct argp_state *state)
