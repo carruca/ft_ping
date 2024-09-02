@@ -125,13 +125,16 @@ ping_recv(struct ping_data *ping)
 	{
 		case ICMP_ECHOREPLY:
 			if (ntohs(icmp->icmp_id) != ping->id)
-				return -1;
+				return 1;
 			ping_echo_print(ping, ip, icmp, nrecv);
 			break;
 
 		case ICMP_TIME_EXCEEDED:
 			ping_icmp_print(ping, ip, icmp, nrecv, "Time to live exceeded");
 			break;
+
+		default:
+			return 1;
 	}
 	return 0;
 }
