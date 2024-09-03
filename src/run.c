@@ -76,14 +76,14 @@ ping_loop(struct ping_data *ping, char *hostname)
 		nfds = select(fdmax, &fdset, NULL, NULL, &timeout);
 		if (nfds == -1)
 			error(EXIT_FAILURE, errno, "select failed");
-		else if (nfds == 1)
+		else
 		{
-			if (!ping_recv(ping))
-			{
-				usleep(ping->interval * 1000);
-				if (!g_stop && ping_xmit(ping))
-					error(EXIT_FAILURE, errno, "sending packet");
-			}
+			if (nfds == 1 && ping_recv(ping))
+				continue;
+
+			usleep(ping->interval * 1000);
+			if (!g_stop && ping_xmit(ping))
+				error(EXIT_FAILURE, errno, "sending packet");
 		}
 	}
 
