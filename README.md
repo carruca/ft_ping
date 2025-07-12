@@ -1,4 +1,5 @@
 # ft_ping
+42 project
 
 A custom implementation of the `ping` utility in C.
 
